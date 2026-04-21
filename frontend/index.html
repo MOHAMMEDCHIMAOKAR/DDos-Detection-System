@@ -83,6 +83,13 @@
                             </svg>
                             Stop Detection
                         </button>
+                        <button class="btn btn-secondary" id="resetBtn" onclick="resetSystem()" title="Clear all stats and alerts">
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M1.5 8A6.5 6.5 0 1 0 3 4.5"/>
+                                <polyline points="1 2 3 4.5 5.5 3"/>
+                            </svg>
+                            Reset
+                        </button>
                     </div>
                 </div>
             </header>
@@ -185,18 +192,63 @@
 
             <!-- Analytics Page -->
             <div id="page-analytics" class="page-content" style="display: none;">
-                <div class="chart-card">
-                    <div class="card-header">
-                        <h2 class="card-title">Analytics Overview</h2>
-                    </div>
-                    <div class="analytics-content">
-                        <div class="analytics-placeholder">
-                            <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#64748B" stroke-width="1.5">
-                                <path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
-                            </svg>
-                            <h3>Detailed Analytics</h3>
-                            <p>Advanced traffic analysis and pattern detection coming soon.</p>
+                <!-- Severity Breakdown + Attack Type rows -->
+                <div class="analytics-grid">
+                    <div class="chart-card">
+                        <div class="card-header">
+                            <h2 class="card-title">Severity breakdown</h2>
+                            <span class="card-subtitle">All-time alert counts</span>
                         </div>
+                        <div class="severity-bars" id="severityBars">
+                            <div class="sev-row">
+                                <span class="sev-label high">HIGH</span>
+                                <div class="sev-track"><div class="sev-fill high" id="barHigh" style="width:0%"></div></div>
+                                <span class="sev-count" id="countHigh">0</span>
+                            </div>
+                            <div class="sev-row">
+                                <span class="sev-label medium">MEDIUM</span>
+                                <div class="sev-track"><div class="sev-fill medium" id="barMedium" style="width:0%"></div></div>
+                                <span class="sev-count" id="countMedium">0</span>
+                            </div>
+                            <div class="sev-row">
+                                <span class="sev-label low">LOW</span>
+                                <div class="sev-track"><div class="sev-fill low" id="barLow" style="width:0%"></div></div>
+                                <span class="sev-count" id="countLow">0</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="chart-card">
+                        <div class="card-header">
+                            <h2 class="card-title">Attack types</h2>
+                            <span class="card-subtitle">All-time alert counts</span>
+                        </div>
+                        <div class="severity-bars">
+                            <div class="sev-row">
+                                <span class="sev-label" style="width:130px;color:var(--info)">DDoS</span>
+                                <div class="sev-track"><div class="sev-fill" id="barDdos" style="width:0%;background:var(--info)"></div></div>
+                                <span class="sev-count" id="countDdos">0</span>
+                            </div>
+                            <div class="sev-row">
+                                <span class="sev-label" style="width:130px;color:var(--warning)">SYN Flood</span>
+                                <div class="sev-track"><div class="sev-fill" id="barSyn" style="width:0%;background:var(--warning)"></div></div>
+                                <span class="sev-count" id="countSyn">0</span>
+                            </div>
+                            <div class="sev-row">
+                                <span class="sev-label" style="width:130px;color:var(--success)">Simultaneous</span>
+                                <div class="sev-track"><div class="sev-fill" id="barBoth" style="width:0%;background:var(--success)"></div></div>
+                                <span class="sev-count" id="countBoth">0</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Attack frequency chart -->
+                <div class="chart-card" style="margin-top:20px">
+                    <div class="card-header">
+                        <h2 class="card-title">Alert frequency</h2>
+                        <span class="card-subtitle">Alerts per minute (last 10 min)</span>
+                    </div>
+                    <div class="chart-container">
+                        <canvas id="frequencyChart"></canvas>
                     </div>
                 </div>
             </div>
@@ -223,35 +275,33 @@
             <div id="page-settings" class="page-content" style="display: none;">
                 <div class="chart-card">
                     <div class="card-header">
-                        <h2 class="card-title">System Settings</h2>
+                        <h2 class="card-title">Detection thresholds</h2>
+                        <span class="card-subtitle">Changes take effect on the next detection tick — no restart needed</span>
                     </div>
                     <div class="settings-content">
                         <div class="setting-item">
                             <div class="setting-info">
-                                <h3>Detection Thresholds</h3>
-                                <p>Configure traffic detection sensitivity</p>
+                                <h3>Packets per second threshold</h3>
+                                <p>Alert triggers when traffic exceeds this rate</p>
                             </div>
-                            <div class="setting-value">
-                                <span class="badge">100 packets/sec</span>
-                            </div>
-                        </div>
-                        <div class="setting-item">
-                            <div class="setting-info">
-                                <h3>Alert Notifications</h3>
-                                <p>Enable real-time alert notifications</p>
-                            </div>
-                            <div class="setting-value">
-                                <span class="badge badge-blue">Enabled</span>
+                            <div class="setting-control">
+                                <input type="number" id="inputPps" class="threshold-input" min="1" max="10000" value="100">
+                                <span class="threshold-unit">pkt/s</span>
                             </div>
                         </div>
                         <div class="setting-item">
                             <div class="setting-info">
-                                <h3>Data Retention</h3>
-                                <p>How long to keep historical data</p>
+                                <h3>Connection threshold</h3>
+                                <p>SYN flood alert triggers above this connection count</p>
                             </div>
-                            <div class="setting-value">
-                                <span class="badge">7 days</span>
+                            <div class="setting-control">
+                                <input type="number" id="inputConn" class="threshold-input" min="1" max="10000" value="50">
+                                <span class="threshold-unit">conns</span>
                             </div>
+                        </div>
+                        <div class="settings-footer">
+                            <span id="settingsSaved" class="settings-saved-msg" style="display:none">&#10003; Saved</span>
+                            <button class="btn btn-primary" onclick="saveSettings()">Save thresholds</button>
                         </div>
                     </div>
                 </div>

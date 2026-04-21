@@ -36,6 +36,17 @@ class Stats(BaseModel):
     active_connections: int
     total_alerts: int
 
+class Snapshot(BaseModel):
+    stats: Stats
+    alerts: List[Alert]
+    history: List[int]
+    running: bool
+    config: dict
+
+class Config(BaseModel):
+    packets_per_second_threshold: int
+    connection_threshold: int
+
 # ============ GLOBAL STATE ============
 
 class DetectionState:
@@ -57,9 +68,11 @@ class DetectionState:
 
 state = DetectionState()
 
-# Detection thresholds
-PACKETS_PER_SECOND_THRESHOLD = 100
-CONNECTION_THRESHOLD = 50
+# Detection thresholds — mutable at runtime via POST /config
+config = {
+    "packets_per_second_threshold": 100,
+    "connection_threshold": 50,
+}
 
 # ============ TRAFFIC SIMULATION ============
 
@@ -105,7 +118,7 @@ def detect_attack(packets_per_sec: int, connections: int) -> List[Alert]:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # Check packets per second threshold (DDoS)
-    if packets_per_sec > PACKETS_PER_SECOND_THRESHOLD:
+    if packets_per_sec > config["packets_per_second_threshold"]:
         if packets_per_sec > 200:
             attack_type = "DDoS Attack - High Volume"
             severity = "HIGH"
@@ -123,7 +136,7 @@ def detect_attack(packets_per_sec: int, connections: int) -> List[Alert]:
         ))
 
     # Check connection threshold (SYN Flood) — independent of above
-    if connections > CONNECTION_THRESHOLD:
+    if connections > config["connection_threshold"]:
         if connections > 80:
             attack_type = "SYN Flood - High Connections"
             severity = "HIGH"
@@ -242,6 +255,54 @@ async def get_history():
 async def get_status():
     """Get system running status"""
     return {"running": state.running}
+
+@app.get("/snapshot")
+async def get_snapshot():
+    """
+    Single endpoint returning stats, alerts, and history in one request.
+    Replaces the three separate /stats, /alerts, /history polling calls.
+    All fields are read from state in one pass so they are consistent.
+    """
+    stats = Stats(
+        total_packets=state.total_packets,
+        packets_per_second=state.packets_per_second,
+        active_connections=state.active_connections,
+        total_alerts=len(state.alerts)
+    )
+    return Snapshot(
+        stats=stats,
+        alerts=state.alerts[-20:] if state.alerts else [],
+        history=list(state.packet_history),
+        running=state.running,
+        config=dict(config)
+    )
+
+@app.get("/config")
+async def get_config():
+    """Get current detection thresholds"""
+    return config
+
+@app.post("/config")
+async def update_config(new_config: Config):
+    """
+    Update detection thresholds at runtime without restarting.
+    Changes take effect on the next detection tick.
+    """
+    if new_config.packets_per_second_threshold < 1 or new_config.connection_threshold < 1:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="Thresholds must be greater than 0")
+    config["packets_per_second_threshold"] = new_config.packets_per_second_threshold
+    config["connection_threshold"] = new_config.connection_threshold
+    return {"status": "updated", "config": config}
+
+@app.post("/reset")
+async def reset_detection():
+    """
+    Clear all stats, alerts, and history without stopping the detection loop.
+    Safe to call while the system is running.
+    """
+    state.reset()
+    return {"status": "reset", "message": "All stats and alerts cleared"}
 
 # ============ MAIN ============
 

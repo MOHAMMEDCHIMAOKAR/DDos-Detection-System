@@ -185,46 +185,59 @@ function updateStatusUI() {
     }
 }
 
-// Fetch Stats
-async function fetchStats() {
+// Fetch Snapshot — single call replacing fetchStats, fetchAlerts, fetchHistory
+async function fetchSnapshot() {
     try {
-        const response = await fetch(`${API_URL}/stats`);
-        const stats = await response.json();
-        
-        // Update stats display
+        const response = await fetch(`${API_URL}/snapshot`);
+        const snapshot = await response.json();
+
+        // Update stats
+        const stats = snapshot.stats;
         document.getElementById('packetsPerSec').textContent = stats.packets_per_second;
         document.getElementById('totalPackets').textContent = stats.total_packets.toLocaleString();
         document.getElementById('activeConnections').textContent = stats.active_connections;
         document.getElementById('alertsCount').textContent = stats.total_alerts;
-        
-        return stats;
+
+        // Update alerts, chart, and analytics from the same consistent payload
+        updateAlertsDisplay(snapshot.alerts);
+        updateChart(snapshot.history);
+        updateAnalytics(snapshot.alerts);
+
+        // Sync settings inputs if config changed server-side
+        if (snapshot.config) {
+            const pps = document.getElementById('inputPps');
+            const conn = document.getElementById('inputConn');
+            if (pps && document.activeElement !== pps) pps.value = snapshot.config.packets_per_second_threshold;
+            if (conn && document.activeElement !== conn) conn.value = snapshot.config.connection_threshold;
+        }
+
+        // Sync running state in case it drifted server-side
+        if (snapshot.running !== isRunning) {
+            isRunning = snapshot.running;
+            updateStatusUI();
+        }
     } catch (error) {
-        console.error('Error fetching stats:', error);
-        return null;
+        console.error('Error fetching snapshot:', error);
     }
 }
 
-// Fetch Alerts
-async function fetchAlerts() {
+// Reset Detection System
+async function resetSystem() {
     try {
-        const response = await fetch(`${API_URL}/alerts`);
-        const alerts = await response.json();
-        
-        updateAlertsDisplay(alerts);
+        const response = await fetch(`${API_URL}/reset`, { method: 'POST' });
+        const data = await response.json();
+        if (data.status === 'reset') {
+            // Immediately clear UI without waiting for next poll
+            document.getElementById('packetsPerSec').textContent = '0';
+            document.getElementById('totalPackets').textContent = '0';
+            document.getElementById('activeConnections').textContent = '0';
+            document.getElementById('alertsCount').textContent = '0';
+            updateAlertsDisplay([]);
+            updateChart([]);
+        }
     } catch (error) {
-        console.error('Error fetching alerts:', error);
-    }
-}
-
-// Fetch History
-async function fetchHistory() {
-    try {
-        const response = await fetch(`${API_URL}/history`);
-        const history = await response.json();
-        
-        updateChart(history);
-    } catch (error) {
-        console.error('Error fetching history:', error);
+        console.error('Error resetting system:', error);
+        alert('Failed to reset. Make sure the backend is running.');
     }
 }
 
@@ -267,16 +280,10 @@ function startUpdates() {
     }
     
     // Update immediately
-    fetchStats();
-    fetchAlerts();
-    fetchHistory();
-    
+    fetchSnapshot();
+
     // Update every second
-    updateInterval = setInterval(() => {
-        fetchStats();
-        fetchAlerts();
-        fetchHistory();
-    }, 1000);
+    updateInterval = setInterval(fetchSnapshot, 1000);
 }
 
 // Stop Updates
@@ -303,8 +310,161 @@ async function checkInitialStatus() {
     }
 }
 
+// ============ ANALYTICS ============
+
+// Analytics state — accumulated over the session
+const analytics = {
+    high: 0, medium: 0, low: 0,
+    ddos: 0, syn: 0,
+    // per-minute buckets: array of {minute, count}
+    minuteBuckets: [],
+    seenAlertIds: new Set(),  // deduplicate by timestamp+ip+type
+    lastMinuteKey: null,
+};
+
+let frequencyChart = null;
+
+function initFrequencyChart() {
+    const ctx = document.getElementById('frequencyChart');
+    if (!ctx) return;
+    frequencyChart = new Chart(ctx.getContext('2d'), {
+        type: 'bar',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'Alerts per minute',
+                data: [],
+                backgroundColor: 'rgba(79, 70, 229, 0.7)',
+                borderRadius: 4,
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 300 },
+            scales: {
+                x: { grid: { display: false } },
+                y: { beginAtZero: true, ticks: { stepSize: 1 } }
+            },
+            plugins: { legend: { display: false } }
+        }
+    });
+}
+
+function updateAnalytics(alerts) {
+    const now = new Date();
+    const minuteKey = `${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')}`;
+
+    let newThisCall = 0;
+
+    alerts.forEach(alert => {
+        const id = `${alert.timestamp}|${alert.ip}|${alert.attack_type}`;
+        if (analytics.seenAlertIds.has(id)) return;
+        analytics.seenAlertIds.add(id);
+        newThisCall++;
+
+        // Severity counts
+        if (alert.severity === 'HIGH') analytics.high++;
+        else if (alert.severity === 'MEDIUM') analytics.medium++;
+        else analytics.low++;
+
+        // Attack type counts
+        if (alert.attack_type.startsWith('DDoS')) analytics.ddos++;
+        else if (alert.attack_type.startsWith('SYN')) analytics.syn++;
+    });
+
+    // Minute bucket
+    if (newThisCall > 0) {
+        if (analytics.lastMinuteKey === minuteKey && analytics.minuteBuckets.length > 0) {
+            analytics.minuteBuckets[analytics.minuteBuckets.length - 1].count += newThisCall;
+        } else {
+            analytics.minuteBuckets.push({ minute: minuteKey, count: newThisCall });
+            if (analytics.minuteBuckets.length > 10) analytics.minuteBuckets.shift();
+            analytics.lastMinuteKey = minuteKey;
+        }
+    }
+
+    renderAnalytics();
+}
+
+function renderAnalytics() {
+    const total = analytics.high + analytics.medium + analytics.low;
+    const setBar = (barId, countId, val) => {
+        const pct = total > 0 ? Math.round((val / total) * 100) : 0;
+        const el = document.getElementById(barId);
+        const ct = document.getElementById(countId);
+        if (el) el.style.width = pct + '%';
+        if (ct) ct.textContent = val;
+    };
+    setBar('barHigh', 'countHigh', analytics.high);
+    setBar('barMedium', 'countMedium', analytics.medium);
+    setBar('barLow', 'countLow', analytics.low);
+
+    const typeTotal = analytics.ddos + analytics.syn;
+    // Simultaneous = ticks where both fired; approximate as min(ddos,syn) if one exceeds the other
+    const both = Math.min(analytics.ddos, analytics.syn);
+    const setTypeBar = (barId, countId, val) => {
+        const pct = typeTotal > 0 ? Math.round((val / typeTotal) * 100) : 0;
+        const el = document.getElementById(barId);
+        const ct = document.getElementById(countId);
+        if (el) el.style.width = pct + '%';
+        if (ct) ct.textContent = val;
+    };
+    setTypeBar('barDdos', 'countDdos', analytics.ddos);
+    setTypeBar('barSyn', 'countSyn', analytics.syn);
+    setTypeBar('barBoth', 'countBoth', both);
+
+    if (frequencyChart) {
+        frequencyChart.data.labels = analytics.minuteBuckets.map(b => b.minute);
+        frequencyChart.data.datasets[0].data = analytics.minuteBuckets.map(b => b.count);
+        frequencyChart.update();
+    }
+}
+
+// ============ SETTINGS ============
+
+async function loadSettings() {
+    try {
+        const res = await fetch(`${API_URL}/config`);
+        const cfg = await res.json();
+        const pps = document.getElementById('inputPps');
+        const conn = document.getElementById('inputConn');
+        if (pps) pps.value = cfg.packets_per_second_threshold;
+        if (conn) conn.value = cfg.connection_threshold;
+    } catch (e) {
+        console.error('Could not load settings:', e);
+    }
+}
+
+async function saveSettings() {
+    const pps = parseInt(document.getElementById('inputPps').value, 10);
+    const conn = parseInt(document.getElementById('inputConn').value, 10);
+    if (!pps || !conn || pps < 1 || conn < 1) {
+        alert('Both thresholds must be positive numbers.');
+        return;
+    }
+    try {
+        const res = await fetch(`${API_URL}/config`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ packets_per_second_threshold: pps, connection_threshold: conn })
+        });
+        const data = await res.json();
+        if (data.status === 'updated') {
+            const msg = document.getElementById('settingsSaved');
+            if (msg) { msg.style.display = 'inline'; setTimeout(() => msg.style.display = 'none', 2500); }
+        }
+    } catch (e) {
+        alert('Failed to save settings. Make sure the backend is running.');
+    }
+}
+
+// ============ INIT ============
+
 // Initialize on Page Load
 document.addEventListener('DOMContentLoaded', () => {
     initChart();
+    initFrequencyChart();
+    loadSettings();
     checkInitialStatus();
 });
