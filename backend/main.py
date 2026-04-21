@@ -95,18 +95,17 @@ def simulate_connections():
 
 # ============ DETECTION LOGIC ============
 
-def detect_attack(packets_per_sec: int, connections: int) -> Optional[Alert]:
+def detect_attack(packets_per_sec: int, connections: int) -> List[Alert]:
     """
-    Detect potential DoS attacks based on thresholds
-    Returns an Alert if attack detected, None otherwise
+    Detect potential DoS attacks based on thresholds.
+    Returns a list of Alerts — one per attack type detected.
+    Both DDoS and SYN Flood can trigger simultaneously.
     """
-    attack_detected = False
-    attack_type = ""
-    severity = "LOW"
-    
-    # Check packets per second threshold
+    alerts = []
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Check packets per second threshold (DDoS)
     if packets_per_sec > PACKETS_PER_SECOND_THRESHOLD:
-        attack_detected = True
         if packets_per_sec > 200:
             attack_type = "DDoS Attack - High Volume"
             severity = "HIGH"
@@ -116,10 +115,15 @@ def detect_attack(packets_per_sec: int, connections: int) -> Optional[Alert]:
         else:
             attack_type = "DDoS Attack - Low Volume"
             severity = "LOW"
-    
-    # Check connection threshold
+        alerts.append(Alert(
+            timestamp=timestamp,
+            ip=generate_fake_ip(),
+            attack_type=attack_type,
+            severity=severity
+        ))
+
+    # Check connection threshold (SYN Flood) — independent of above
     if connections > CONNECTION_THRESHOLD:
-        attack_detected = True
         if connections > 80:
             attack_type = "SYN Flood - High Connections"
             severity = "HIGH"
@@ -129,16 +133,14 @@ def detect_attack(packets_per_sec: int, connections: int) -> Optional[Alert]:
         else:
             attack_type = "SYN Flood - Low Connections"
             severity = "LOW"
-    
-    if attack_detected:
-        return Alert(
-            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        alerts.append(Alert(
+            timestamp=timestamp,
             ip=generate_fake_ip(),
             attack_type=attack_type,
             severity=severity
-        )
-    
-    return None
+        ))
+
+    return alerts
 
 # ============ DETECTION LOOP ============
 
@@ -161,9 +163,9 @@ async def detection_loop():
         if len(state.packet_history) > 60:
             state.packet_history.pop(0)
         
-        # Detect attacks
-        alert = detect_attack(packets_this_second, state.active_connections)
-        if alert:
+        # Detect attacks — may return multiple alerts in the same tick
+        new_alerts = detect_attack(packets_this_second, state.active_connections)
+        for alert in new_alerts:
             state.alerts.append(alert)
             # Keep only last 100 alerts
             if len(state.alerts) > 100:
